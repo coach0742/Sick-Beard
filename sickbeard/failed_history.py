@@ -23,10 +23,10 @@ import datetime
 
 from sickbeard import db
 from sickbeard import logger
-from sickbeard.common import Quality
-from sickbeard.common import WANTED, FAILED
 from sickbeard import exceptions
 from sickbeard.history import dateFormat
+from sickbeard.common import Quality
+from sickbeard.common import WANTED, FAILED
 
 
 def _log_helper(message, level=logger.MESSAGE):
@@ -86,9 +86,11 @@ def logFailed(release):
 
 
 def logSuccess(release):
-    # Placeholder for now. We want to maintain history in case a download
-    # succeeds but is bad.
-    pass
+    myDB = db.DBConnection("failed.db")
+
+    release = prepareFailedName(release)
+
+    myDB.action("DELETE FROM history WHERE release=?", [release])
 
 
 def hasFailed(release, size, provider="%"):
@@ -108,7 +110,7 @@ def hasFailed(release, size, provider="%"):
     return (len(sql_results) > 0)
 
 
-def revertEpisodes(show_obj, season, episodes):
+def revertEpisode(show_obj, season, episode=None):
     """Restore the episodes of a failed download to their original state"""
     myDB = db.DBConnection("failed.db")
     log_str = u""
@@ -117,24 +119,22 @@ def revertEpisodes(show_obj, season, episodes):
     # {episode: result, ...}
     history_eps = dict([(res["episode"], res) for res in sql_results])
 
-    if len(episodes) > 0:
-        for cur_episode in episodes:
-            try:
-                ep_obj = show_obj.getEpisode(season, cur_episode)
-            except exceptions.EpisodeNotFoundException, e:
-                log_str += _log_helper(u"Unable to create episode, please set its status manually: " + exceptions.ex(e), logger.WARNING)
-                continue
-
-            log_str += _log_helper(u"Reverting episode (%s, %s): %s" % (season, cur_episode, ep_obj.name))
+    if episode:
+        try:
+            ep_obj = show_obj.getEpisode(season, episode)
+            log_str += _log_helper(u"Reverting episode (%s, %s): %s" % (season, episode, ep_obj.name))
             with ep_obj.lock:
-                if cur_episode in history_eps:
+                if episode in history_eps:
                     log_str += _log_helper(u"Found in history")
-                    ep_obj.status = history_eps[cur_episode]['old_status']
+                    ep_obj.status = history_eps[episode]['old_status']
                 else:
                     log_str += _log_helper(u"WARNING: Episode not found in history. Setting it back to WANTED", logger.WARNING)
                     ep_obj.status = WANTED
 
                 ep_obj.saveToDB()
+
+        except exceptions.EpisodeNotFoundException, e:
+            log_str += _log_helper(u"Unable to create episode, please set its status manually: " + exceptions.ex(e), logger.WARNING)
     else:
         # Whole season
         log_str += _log_helper(u"Setting season to wanted: " + str(season))
@@ -152,21 +152,20 @@ def revertEpisodes(show_obj, season, episodes):
 
     return log_str
 
-def markFailed(show_obj, season, episodes):
+def markFailed(show_obj, season, episode=None):
     log_str = u""
 
-    if len(episodes) > 0:
-        for cur_episode in episodes:
-            try:
-                ep_obj = show_obj.getEpisode(season, cur_episode)
-            except exceptions.EpisodeNotFoundException, e:
-                log_str += _log_helper(u"Unable to get episode, please set its status manually: " + exceptions.ex(e), logger.WARNING)
-                continue
+    if episode:
+        try:
+            ep_obj = show_obj.getEpisode(season, episode)
 
             with ep_obj.lock:
                 quality = Quality.splitCompositeStatus(ep_obj.status)[1]
                 ep_obj.status = Quality.compositeStatus(FAILED, quality)
                 ep_obj.saveToDB()
+
+        except exceptions.EpisodeNotFoundException, e:
+            log_str += _log_helper(u"Unable to get episode, please set its status manually: " + exceptions.ex(e), logger.WARNING)
     else:
         # Whole season
         for ep_obj in show_obj.getAllEpisodes(season):
@@ -214,37 +213,37 @@ def trimHistory():
     myDB.action("DELETE FROM history WHERE date < " + str((datetime.datetime.today() - datetime.timedelta(days=30)).strftime(dateFormat)))
 
 
-def findRelease(showtvdbid, season, episode):
+def findRelease(show, season, episode):
     """
-    Find release in history by show ID, season, and episode.
-    Raise exception if multiple found.
+    Find releases in history by show ID and season.
+    Return None for release if multiple found or no release found.
     """
+    if not show: return (None, None, None)
+    if not season: return (None, None, None)
+
+    release = None
+    provider = None
 
     myDB = db.DBConnection("failed.db")
-    sql_results = myDB.select(
-        "SELECT release FROM history WHERE showtvdbid=? AND season=? AND episode=?",
-        [showtvdbid, season, episode])
 
-    logger.log(u"findRelease results: " + str([x["release"] for x in sql_results]), logger.DEBUG)
+    # Clear old snatches for this release if any exist
+    myDB.action("DELETE FROM history WHERE showtvdbid=" + str(show.tvdbid) + " AND season=" + str(season) + " AND episode=" + str(episode) + " AND date < (SELECT max(date) FROM history WHERE showtvdbid=" + str(show.tvdbid) + " AND season=" + str(season) + " AND episode=" + str(episode) + ")")
 
-    if len(sql_results) == 0:
-        logger.log(u"Release not found (%s, %s, %s)" % (showtvdbid, season, episode),
-                   logger.WARNING)
-        raise exceptions.FailedHistoryNotFoundException()
-    elif len(sql_results) > 1:
-        # Multi-snatched (i.e., user meddling)
-        # Clear it and start fresh
-        logger.log(u"Multi-snatch detected. (%s, %s, %s)" % (showtvdbid, season, episode),
-                   logger.WARNING)
-        myDB.select("DELETE FROM history WHERE showtvdbid=? AND season=? AND episode=?",
-                    [showtvdbid, season, episode])
-        # Clear multi-ep by release as well so we don't have partial history
-        # for a release
-        for result in sql_results:
-            myDB.select("DELETE FROM HISTORY where release=?", [result["release"]])
+    # Search for release in snatch history
+    results = myDB.select("SELECT release, provider, date FROM history WHERE showtvdbid=? AND season=? AND episode=?",[show.tvdbid, season, episode])
 
-        raise exceptions.FailedHistoryMultiSnatchException()
-    else:
-        return sql_results[0]["release"]
+    for result in results:
+        release = str(result["release"])
+        provider = str(result["provider"])
+        date = result["date"]
 
-    
+        # Clear any incomplete snatch records for this release if any exist
+        myDB.action("DELETE FROM history WHERE release=? AND date!=?",[release, date])
+
+        # Found a previously failed release
+        logger.log(u"Failed release found for season (%s): (%s)" % (season, result["release"]), logger.DEBUG)
+        return (release, provider)
+
+    # Release was not found
+    logger.log(u"No releases found for season (%s) of (%s)" % (season, show.tvdbid), logger.DEBUG)
+    return (release, provider)
