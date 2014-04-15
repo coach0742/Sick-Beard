@@ -114,7 +114,7 @@ def sendNZB(nzb, proper = False):
             if nzbcontent64 is not None:
                 nzbget_result = nzbGetRPC.append(nzb.name + ".nzb", sickbeard.NZBGET_CATEGORY, nzbgetprio, False, nzbcontent64)
             else:
-                nzbget_result = nzbGetRPC.appendurl(nzb.name + ".nzb", ssickbeard.NZBGET_CATEGORY, nzbgetprio, False, nzb.url)
+                nzbget_result = nzbGetRPC.appendurl(nzb.name + ".nzb", sickbeard.NZBGET_CATEGORY, nzbgetprio, False, nzb.url)
         if nzbget_result:
             logger.log(u"NZB sent to NZBget successfully", logger.DEBUG)
             return True
