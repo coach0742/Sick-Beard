@@ -420,8 +420,8 @@ def moveAndSymlinkFile(srcFile, destFile):
         ek.ek(os.rename, srcFile, destFile)
         fixSetGroupID(destFile)
         ek.ek(symlink, destFile, srcFile)
-    except:
-        logger.log(u"Failed to create symlink of " + srcFile + " at " + destFile + ". Copying instead", logger.ERROR)
+    except Exception as e:
+        logger.log(u"Failed to create symlink of " + srcFile + " at " + destFile + ": " + ex(e) + ". Copying instead", logger.ERROR)
         copyFile(srcFile, destFile)
 
 def make_dirs(path):
